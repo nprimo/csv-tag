@@ -3,6 +3,7 @@ package csvtag
 import (
 	"fmt"
 	"reflect"
+	"strconv"
 )
 
 type InvalidUnmarshalError struct {
@@ -36,7 +37,7 @@ func Unmarshal(rows [][]string, v any) error {
 	if err := d.init(header, v); err != nil {
 		return err
 	}
-	return d.unmarshall(rows, v)
+	return d.unmarshal(rows, v)
 }
 
 // checkValidHeader check if the header has matching tags in the struct
@@ -44,7 +45,7 @@ func Unmarshal(rows [][]string, v any) error {
 func checkValidHeader(header []string, v any) error {
 	ptrEl := reflect.TypeOf(v).Elem()
 	t := ptrEl.Elem()
-	for i := 0; i < t.NumField(); i++ {
+	for i := range t.NumField() {
 		field := t.Field(i)
 		tag := field.Tag.Get("csv")
 		if i := index(tag, header); i == -1 {
@@ -57,29 +58,30 @@ func checkValidHeader(header []string, v any) error {
 }
 
 type decoder struct {
-	mapper map[int]string
+	// header index to field name
+	headerIdToFieldName map[int]string
 }
 
 func newDecoder() decoder {
 	return decoder{
-		mapper: map[int]string{},
+		headerIdToFieldName: map[int]string{},
 	}
 }
 
 func (d *decoder) init(header []string, v any) error {
 	ptrEl := reflect.TypeOf(v).Elem()
 	t := ptrEl.Elem()
-	for i := 0; i < t.NumField(); i++ {
+	for i := range t.NumField() {
 		field := t.Field(i)
 		tag := field.Tag.Get("csv")
 		id := index(tag, header)
-		d.mapper[id] = field.Name
+		d.headerIdToFieldName[id] = field.Name
 	}
 	return nil
 }
 
-// unmarshall store the data inside the array of struct v.
-func (d *decoder) unmarshall(data [][]string, v any) error {
+// unmarshal store the data inside the array of struct v.
+func (d *decoder) unmarshal(data [][]string, v any) error {
 	sliceRv := reflect.MakeSlice(
 		reflect.TypeOf(v).Elem(),
 		len(data)-1,
@@ -87,13 +89,33 @@ func (d *decoder) unmarshall(data [][]string, v any) error {
 	)
 	for i, row := range data[1:] {
 		rv := sliceRv.Index(i)
-		for rowIndex, fieldName := range d.mapper {
+		for rowIndex, fieldName := range d.headerIdToFieldName {
 			f := rv.FieldByName(fieldName)
 			switch f.Kind() {
 			case reflect.String:
 				f.SetString(row[rowIndex])
+			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+				num, err := strconv.ParseInt(row[rowIndex], 10, 64)
+				if err != nil {
+					return err
+				}
+				f.SetInt(num)
+			case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+				num, err := strconv.ParseUint(row[rowIndex], 10, 64)
+				if err != nil {
+					return err
+				}
+				f.SetUint(num)
+			case reflect.Float32, reflect.Float64:
+				num, err := strconv.ParseFloat(row[rowIndex], f.Type().Bits())
+				if err != nil || f.OverflowFloat(num) {
+					return err
+				}
+				f.SetFloat(num)
 			default:
-				// TODO: other cases
+				// TODO: other cases:
+				// - time
+				// - boolean
 			}
 		}
 	}
